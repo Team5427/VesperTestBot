@@ -13,6 +13,7 @@ import org.ironmaple.simulation.drivesims.SwerveModuleSimulation;
 import org.littletonrobotics.junction.Logger;
 import team5427.frc.robot.Constants;
 import team5427.frc.robot.subsystems.Swerve.io.ModuleIO;
+import team5427.frc.robot.subsystems.Swerve.io.ModuleIOHybrid;
 import team5427.frc.robot.subsystems.Swerve.io.ModuleIOInputsAutoLogged;
 import team5427.frc.robot.subsystems.Swerve.io.talon.ModuleIOTalonFXReal;
 import team5427.frc.robot.subsystems.Swerve.io.talon.ModuleIOTalonFXSim;
@@ -36,10 +37,10 @@ public class SwerveModule {
                 + index
                 + " is not assigned a SwerveModuleSimulation in a simulated environment"));
       case REAL:
-        io = new ModuleIOTalonFXReal(index);
+        io = new ModuleIOHybrid(index);
         break;
       case REPLAY:
-        io = new ModuleIOTalonFXReal(index);
+        io = new ModuleIOHybrid(index);
         break;
       default:
         break;

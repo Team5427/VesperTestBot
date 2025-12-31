@@ -1,19 +1,24 @@
-package team5427.frc.robot.subsystems.Swerve.io.spark;
+package team5427.frc.robot.subsystems.Swerve.io;
 
 import static edu.wpi.first.units.Units.Amp;
+import static edu.wpi.first.units.Units.Amps;
 import static edu.wpi.first.units.Units.MetersPerSecond;
+import static edu.wpi.first.units.Units.Radian;
 import static edu.wpi.first.units.Units.Rotations;
 import static edu.wpi.first.units.Units.RotationsPerSecond;
 import static edu.wpi.first.units.Units.Volts;
 
+import com.ctre.phoenix6.BaseStatusSignal;
 import com.ctre.phoenix6.StatusSignal;
 import com.ctre.phoenix6.configs.CANcoderConfiguration;
 import com.ctre.phoenix6.hardware.CANcoder;
+import com.ctre.phoenix6.hardware.ParentDevice;
 import com.ctre.phoenix6.signals.SensorDirectionValue;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.kinematics.SwerveModulePosition;
 import edu.wpi.first.math.kinematics.SwerveModuleState;
 import edu.wpi.first.units.measure.Angle;
+import edu.wpi.first.units.measure.AngularVelocity;
 import edu.wpi.first.units.measure.Current;
 import edu.wpi.first.units.measure.Force;
 import edu.wpi.first.units.measure.LinearVelocity;
@@ -24,12 +29,15 @@ import java.util.function.DoubleSupplier;
 import team5427.frc.robot.Constants;
 import team5427.frc.robot.subsystems.Swerve.SwerveConstants;
 import team5427.frc.robot.subsystems.Swerve.io.ModuleIO;
+import team5427.frc.robot.subsystems.Swerve.io.spark.SparkOdometryThread;
+import team5427.frc.robot.subsystems.Swerve.io.talon.PhoenixOdometryThread;
 import team5427.lib.motors.SimpleSparkMax;
 import team5427.lib.motors.SparkUtil;
+import team5427.lib.motors.SteelTalonFX;
 
-public class ModuleIOSparkMax implements ModuleIO {
+public class ModuleIOHybrid implements ModuleIO {
   private SimpleSparkMax steerMotor;
-  private SimpleSparkMax driveMotor;
+  private SteelTalonFX driveMotor;
 
   private CANcoder cancoder;
 
@@ -42,27 +50,24 @@ public class ModuleIOSparkMax implements ModuleIO {
 
   private StatusSignal<Angle> absolutePosition;
 
-  public ModuleIOSparkMax(int index) {
+  private SwerveModuleState targetModuleState;
+  private StatusSignal<Voltage> driveMotorVoltage;
+  private StatusSignal<Current> driveMotorCurrent;
+  private StatusSignal<Current> driveTorqueCurrent;
+  private StatusSignal<Angle> driveMotorPosition;
+  private StatusSignal<AngularVelocity> driveMotorVelocity;
+
+  public ModuleIOHybrid(int index) {
     this.moduleIdx = index;
     steerMotor = new SimpleSparkMax(SwerveConstants.kSwerveUtilInstance.kSteerMotorIds[index]);
-    driveMotor = new SimpleSparkMax(SwerveConstants.kSwerveUtilInstance.kDriveMotorIds[index]);
+    driveMotor = new SteelTalonFX(SwerveConstants.kSwerveUtilInstance.kDriveMotorIds[index]);
     cancoder =
         new CANcoder(SwerveConstants.kSwerveUtilInstance.kCancoderIds[index].getDeviceNumber());
 
     steerMotor.apply(SwerveConstants.kSteerMotorConfiguration);
     driveMotor.apply(SwerveConstants.kDriveMotorConfiguration);
 
-    driveMotor
-        .getSparkMaxConfig()
-        .signals
-        .primaryEncoderPositionAlwaysOn(true)
-        .primaryEncoderVelocityAlwaysOn(true)
-        .primaryEncoderPositionPeriodMs((int) (1000.0 / Constants.kOdometryFrequency))
-        .primaryEncoderVelocityPeriodMs(20)
-        .appliedOutputPeriodMs(20)
-        .busVoltagePeriodMs(20)
-        .outputCurrentPeriodMs(20);
-    driveMotor.applySparkConfiguration(driveMotor.getSparkMaxConfig());
+    driveMotor.apply(SwerveConstants.kDriveMotorConfiguration);
 
     steerMotor
         .getSparkMaxConfig()
@@ -88,59 +93,66 @@ public class ModuleIOSparkMax implements ModuleIO {
     absolutePosition = cancoder.getAbsolutePosition();
 
     timestampQueue = SparkOdometryThread.getInstance().makeTimestampQueue();
-    drivePositionQueue =
-        SparkOdometryThread.getInstance()
-            .registerSignal(
-                driveMotor.getSparkMax(), driveMotor.getSparkMax().getEncoder()::getPosition);
+    this.drivePositionQueue =
+    PhoenixOdometryThread.getInstance().registerSignal(this.driveMotorPosition);
     turnPositionQueue =
         SparkOdometryThread.getInstance()
             .registerSignal(
                 steerMotor.getSparkMax(), steerMotor.getSparkMax().getEncoder()::getPosition);
+    driveMotorPosition = driveMotor.getTalonFX().getPosition();
+
+    driveMotorVelocity = driveMotor.getTalonFX().getVelocity();
+
+    System.out.println("New Module with idx: " + moduleIdx);
+
+    driveMotorVoltage = driveMotor.getTalonFX().getMotorVoltage();
+    driveMotorCurrent = driveMotor.getTalonFX().getStatorCurrent();
+    driveTorqueCurrent = driveMotor.getTalonFX().getTorqueCurrent();
+
+    BaseStatusSignal.setUpdateFrequencyForAll(
+        Constants.kOdometryFrequency, driveMotorPosition);
+    BaseStatusSignal.setUpdateFrequencyForAll(
+        50.0,
+        driveMotorVoltage,
+        driveMotorCurrent,
+        absolutePosition,
+        driveMotorVelocity);
+
+    ParentDevice.optimizeBusUtilizationForAll(
+        driveMotor.getTalonFX(), cancoder);
+
+    BaseStatusSignal.waitForAll(
+        0.02, absolutePosition, driveMotorPosition, driveMotorVelocity);
   }
 
   @Override
   public void updateInputs(ModuleIOInputs inputs) {
-    this.absolutePosition = absolutePosition.refresh();
-    inputs.absolutePosition = Rotation2d.fromRotations(absolutePosition.getValue().in(Rotations));
-    SparkUtil.ifOk(
-        driveMotor.getSparkMax(),
-        driveMotor::getEncoderVelocity,
-        (value) -> inputs.driveMotorLinearVelocity = MetersPerSecond.of(value));
-    SparkUtil.ifOk(
-        driveMotor.getSparkMax(),
-        driveMotor.getSparkMax().getEncoder()::getPosition,
-        (value) -> inputs.driveMotorRotations = value);
-    SparkUtil.ifOk(
-        driveMotor.getSparkMax(),
-        driveMotor.getSparkMax().getEncoder()::getVelocity,
-        (value) -> inputs.driveMotorRotationsPerSecond = value);
+     BaseStatusSignal.refreshAll(driveMotorPosition);
 
-    inputs.driveMotorAngularVelocity = RotationsPerSecond.of(inputs.driveMotorRotationsPerSecond);
+    BaseStatusSignal.refreshAll(
+        driveMotorVoltage,
+        driveMotorCurrent,
+        driveMotorVelocity,
+        absolutePosition);
+    inputs.absolutePosition = Rotation2d.fromRotations(absolutePosition.getValue().in(Rotations));
+    inputs.driveMotorPosition = Rotation2d.fromRadians(driveMotorPosition.getValue().in(Radian));
+    inputs.driveMotorAngularVelocity = driveMotorVelocity.getValue();
+    inputs.driveMotorLinearVelocity =
+        MetersPerSecond.of(
+            driveMotorVelocity.getValue().in(RotationsPerSecond)
+                * Math.PI
+                * driveMotor.getMotorConfiguration().finalDiameterMeters);
     SparkUtil.ifOk(
         steerMotor.getSparkMax(),
         steerMotor::getEncoderPosition,
         (value) -> inputs.steerPosition = Rotation2d.fromRotations(value));
     inputs.currentModuleState =
         new SwerveModuleState(inputs.driveMotorLinearVelocity, inputs.absolutePosition);
-    SparkUtil.ifOk(
-        driveMotor.getSparkMax(),
-        driveMotor::getEncoderPosition,
-        (value) ->
-            inputs.currentModulePosition = new SwerveModulePosition(value, inputs.steerPosition));
-    SparkUtil.ifOk(
-        driveMotor.getSparkMax(),
-        driveMotor.getSparkMax()::getOutputCurrent,
-        (value) -> inputs.driveMotorCurrent = Amp.of(value));
+    inputs.currentModulePosition = new SwerveModulePosition(inputs.driveMotorLinearVelocity.in(MetersPerSecond), inputs.steerPosition);
     SparkUtil.ifOk(
         steerMotor.getSparkMax(),
         steerMotor.getSparkMax()::getOutputCurrent,
         (value) -> inputs.steerMotorCurrent = Amp.of(value));
-    SparkUtil.ifOk(
-        driveMotor.getSparkMax(),
-        new DoubleSupplier[] {
-          driveMotor.getSparkMax()::getAppliedOutput, driveMotor.getSparkMax()::getBusVoltage
-        },
-        (values) -> inputs.driveMotorVoltage = Volts.of(values[0] * values[1]));
 
     SparkUtil.ifOk(
         steerMotor.getSparkMax(),
@@ -149,7 +161,7 @@ public class ModuleIOSparkMax implements ModuleIO {
         },
         (values) -> inputs.steerMotorVoltage = Volts.of(values[0] * values[1]));
 
-    inputs.driveMotorConnected = !driveMotor.getSparkMax().hasStickyFault();
+    inputs.driveMotorConnected = driveMotor.getTalonFX().isConnected();
     inputs.steerMotorConnected = !steerMotor.getSparkMax().hasStickyFault();
 
     // Update odometry inputs
@@ -184,18 +196,14 @@ public class ModuleIOSparkMax implements ModuleIO {
   }
 
   public void setDriveFeedForward(Current current) {
-    DriverStation.reportWarning(
-        "Spark Max Drive Motor with id: "
-            + driveMotor.getSparkMax().getDeviceId()
-            + " is assigned a current feedforward. Spark Max does not support current feedforwards.",
-        false);
+    driveMotor.getMotorConfiguration().kFF = current.in(Amps);
   }
 
   public void setDriveFeedForward(Force xForce, Force yForce) {
     DriverStation.reportWarning(
-        "Spark Max Drive Motor with id: "
-            + driveMotor.getSparkMax().getDeviceId()
-            + " is assigned a force feedforward. Spark Max does not support force feedforwards.",
+        "Talon FX Drive Motor with id: "
+            + driveMotor.getTalonFX().getDeviceID()
+            + " is assigned a force feedforward. This library currently does not support force feedforwards due to unfinished implementation.",
         false);
   }
 
