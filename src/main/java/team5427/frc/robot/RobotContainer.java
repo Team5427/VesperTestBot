@@ -4,11 +4,17 @@
 
 package team5427.frc.robot;
 
+import com.pathplanner.lib.auto.AutoBuilder;
+import com.pathplanner.lib.config.PIDConstants;
 import com.pathplanner.lib.config.RobotConfig;
+import com.pathplanner.lib.controllers.PPHolonomicDriveController;
 
-import edu.wpi.first.cscore.CameraServerJNI.TelemetryKind;
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.wpilibj.DriverStation;
+import edu.wpi.first.wpilibj.DriverStation.Alliance;
+import edu.wpi.first.wpilibj.smartdashboard.SendableChooser;
+import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.button.CommandXboxController;
 import org.ironmaple.simulation.SimulatedArena;
@@ -17,6 +23,7 @@ import team5427.frc.robot.Constants.DriverConstants;
 import team5427.frc.robot.io.DriverProfiles;
 import team5427.frc.robot.io.OperatorControls;
 import team5427.frc.robot.io.PilotingControls;
+import team5427.frc.robot.subsystems.Swerve.DrivingConstants;
 import team5427.frc.robot.subsystems.Swerve.SwerveSubsystem;
 import team5427.frc.robot.subsystems.intake.IntakeSubsystem;
 import team5427.frc.robot.subsystems.vision.VisionSubsystem;
@@ -30,11 +37,14 @@ import team5427.frc.robot.subsystems.vision.io.QuestNav;
  */
 public class RobotContainer {
 
+  private SendableChooser<Command> autoChooser;
+
   /** The container for the robot. Contains subsystems, OI devices, and commands. */
   public RobotContainer() {
 
     try {
       Constants.config = RobotConfig.fromGUISettings();
+      System.out.println("Robot Config loaded from GUI Settings");
     } catch (Exception e) {
       System.out.println("Robot Config not loading from GUI Settings");
       e.printStackTrace();
@@ -66,6 +76,23 @@ public class RobotContainer {
         () -> RobotPose.getInstance().getGyroHeading());
     QuestNav.getInstance().setPose(new Pose2d(10 * Math.random(), 4, Rotation2d.kZero));
 
+    AutoBuilder.configure(
+      RobotPose.getInstance()::getAdaptivePose, 
+      RobotPose.getInstance()::resetAllPose, 
+      SwerveSubsystem.getInstance()::getCurrentChassisSpeeds, 
+      (speeds) -> SwerveSubsystem.getInstance().setInputSpeeds(speeds), 
+      new PPHolonomicDriveController(
+        new PIDConstants(DrivingConstants.kTranslationalKp.get(), 0.0, 0.0), 
+        new PIDConstants(DrivingConstants.kRotationKp.get(), 0.0, 0.0)
+      ), 
+      Constants.config, 
+      () -> {return DriverStation.getAlliance().isEmpty()&&DriverStation.getAlliance().get() == Alliance.Red;}, 
+      SwerveSubsystem.getInstance()
+    );
+
+    autoChooser = AutoBuilder.buildAutoChooser("A1");
+    SmartDashboard.putData("Auto Chooser", autoChooser);
+
     buttonBindings();
   }
 
@@ -89,7 +116,7 @@ public class RobotContainer {
    */
   public Command getAutonomousCommand() {
     // An example command will be run in autonomous
-    return null;
+    return autoChooser.getSelected();
   }
 
   public void resetSimulationField() {
